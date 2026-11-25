@@ -207,4 +207,97 @@ def scan():
             print(f"  {label:10} could not be checked")
     if not candidates:
         return
-    
+
+    print("\nChoose candidates to move into the review folder.")
+    print("Enter: all | category name | comma-seperated number | none")
+    for number, item in enumerate(candidates, 1):
+        print(
+            f"{number:4}. [{item['category']:12}] "
+            f"{human(item['size']):>10}  {item['path']}" 
+        )
+
+    choice = input("\nSelection: ").strip().lower()
+    if choice in ("", "none", "n"):
+        print("No files moved.")
+        return 
+
+    if choice == "all":
+        selected = candidates
+    elif choice in CATEGORIES:
+        selected = [item for item in candidates if item["category"] == choice]
+    else:
+        try:
+            numbers = {int(value.strip()) for value in choice.split(",")}
+            if any(number < 1 or number > len(candidates) for number in numbers):
+                raise ValueError
+            selected = [candidates[number - 1] for number in sorted(numbers)]
+        except ValueError:
+            print("Invalid selection. Nothing was moved.")
+            return
+
+    confirm = input(
+        f"Move {len(selected)} file(s) to {REVIEW}? [y/N]: "
+    ).strip().lower()
+
+    if confirm != "y":
+        print("Cancelled.")
+        return
+
+    stage_files(selected)
+
+def  unique_destination(destination):
+    if not destination.exists():
+        return destination
+
+    counter = 1 
+    while True:
+        candidate = destination.with_name(
+            f"{destination.stem}__{counter}{destination.suffix}"
+        )
+        if not candidate.exists():
+            return candidate
+
+        counter += 1
+
+def stage_files(items):
+    REVIEW.mkdir(parents = True, exist_ok=True)
+    manifest = load_manifest()
+    moved = 0
+
+    for item in items:
+        source = Path(item["path"])
+        try:
+            if not source.is_file() or source.is_symlink():
+                print(f"Skipped (outside home/review): {source}")
+                continue
+            if not is_inside(source,HOME) or is_inside(source, REVIEW):
+                print(f"Skipped (outside home/review): {source}")
+                continue
+            relative = source.relative_to(HOME)
+            destination = unique_destination(REVIEW / item["category"] / relative)
+            destination.parent.mkdir(parents=True, exist_ok = True)
+
+            shutil.move(str(source), str(destination))
+            manifest["items"].append({
+                "id": len(manifest["items"]) + 1,
+                "category": item["category"],
+                "original":str(source),
+                "stored": str(destination),
+                "size":item["size"],
+                "staged_at": time.time()
+                "status":"stsged"
+            })
+            moved += 1
+            print(f"Moved: {source.name}")
+        except OSError as exc:
+            print(f"Could not move {source}: {exc}")
+
+    save_manifest(manifest)
+    print(f"\nMoved {moved} file(s). Origignals can be restored with: python3 {Path(sys.argv[0]).name} restore")
+
+def review():
+    manifest = load_manifest()
+    active = [item for item in manifest["items"] if item["status"] == "staged"]
+    if not active:
+        print("There are no staged files to review.")
+        return
