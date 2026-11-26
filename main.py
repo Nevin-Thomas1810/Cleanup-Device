@@ -68,7 +68,7 @@ def load_manifest():
     if not MANIFEST.exists():
         return {"version":1,"items":[]}
     try:
-        data = json.load(MANIFEST.read_text(encoding="utf-8"))
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
         if data.get("version") != 1 or not isinstance(data.get("items"), list):
             raise ValueError("Unsupported Manifest Format")
         return data
@@ -82,7 +82,7 @@ def save_manifest(data):
     REVIEW.mkdir(parents=True, exist_ok = True)
     temporary_manifest = MANIFEST.with_suffix(".json.tmp")
     temporary_manifest.write_text(
-        json.dump(data, indent=2, ensure_ascii = False), encoding ="utf-8"
+        json.dumps(data, indent=2, ensure_ascii = False), encoding ="utf-8"
     ) 
     os.replace(temporary_manifest, MANIFEST)
 
@@ -99,13 +99,13 @@ def classify(path):
     parent_names = {part.lower() for part in path.parts}
 
     if suffix in TEMP_SUFFIXES or name.startswith("~$"):
-        return "temp"
+        return "temporary"
 
     if suffix in LOG_SUFFIXES:
-        return "old_ logs"
+        return "old_logs"
 
     if suffix == ".pdf":
-        return "pdf"
+        return "pdfs"
 
     if suffix in {".png",".jpg",".jpeg",".webp"}:
         if any(word in name for word in SCREENSHOT_WORDS):
@@ -130,7 +130,7 @@ def scan_files():
         ]
 
         for filename in filenames:
-            path = root / filename
+            path = Path(root) / filename
 
             try:
                 if path.is_symlink() or not path.is_file():
@@ -151,7 +151,7 @@ def scan():
     for path, size, modified in scan_files():
         category = classify(path)
         if category:
-            category.append({
+            candidates.append({
                 "path":str(path),
                 "category":category,
                 "size":size,
@@ -161,7 +161,7 @@ def scan():
         if size <= 100 * 1024 * 1024 and size > 0:
             digest = file_hash(path)
             if digest:
-                hash_groups[digest].append(modified, size, path)
+                hash_groups[digest].append((path, size, modified))
 
     duplicate_groups = [
         group for group in hash_groups.values() if len(group) > 1
@@ -189,7 +189,7 @@ def scan():
     totals = defaultdict(lambda: [0,0])
     for item in candidates:
         totals[item["category"]][0] += 1
-        totals[item["category"]][0] += item["size"]
+        totals[item["category"]][1] += item["size"]
     
     for category in CATEGORIES:
         count,size = totals[category]
@@ -284,8 +284,8 @@ def stage_files(items):
                 "original":str(source),
                 "stored": str(destination),
                 "size":item["size"],
-                "staged_at": time.time()
-                "status":"stsged"
+                "staged_at": time.time(),
+                "status":"staged"
             })
             moved += 1
             print(f"Moved: {source.name}")
@@ -301,3 +301,142 @@ def review():
     if not active:
         print("There are no staged files to review.")
         return
+
+    print(f"{'ID':>4})  {'CATEGORY':14} {'SIZE':>10}  FILE")
+    print("-" * 85)
+    for item in active:
+        print(
+            f"{item['id']:4}  {item['category']:14} "
+            f"{human(item['size']):>10}  {item['stored']}"
+        )
+    print(f"\n{len(active)} file(s) awaiting your decision.")
+    print(f"Review folder:{REVIEW}")
+
+def restore():
+    manifest = load_manifest()
+    active = [item for item in manifest["items"] if item["status"] == "staged"]
+    if not active:
+        print("There are no staged files to restore.")
+        return
+
+    print("Files available to restore:")
+    for item in active:
+        print(f"  {item['id']}: {item['stored']}")
+
+    choice = input("\nRestore IDs (comma-seperated) or 'all': ").strip().lower()
+    if choice == "all":
+        selected = active
+    else:
+        try:
+            ids = {int(value.strip()) for value in choice.split(",")}
+            selected = [item for item in active if item["id"] in ids]
+            if not selected or len(selected) != len(ids):
+                raise ValueError
+        except ValueError:
+            print("Invalid Selection. Nothing restored.")
+            return
+
+    confirm = input(f"Restore {len(selected)} file(s)? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print("Cancelled.")
+        return
+
+    for item in selected:
+        stored = Path(item["stored"])
+        original = Path(item["original"])
+        try:
+            if not stored.is_file():
+                print(f"Missing form review folder: {stored}")
+                continue
+
+            if not is_inside(stored, REVIEW) or not is_inside(original, HOME):
+                print(f"Skipped unsafe path: {stored}")
+                continue
+
+            if original.exists():
+                print(f"Destination aldready exists; not overwriting: {original}")
+                continue
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(stored), str(original))
+            item["status"] = "restored"
+            print(f"Restored: {original}")
+        except OSError as exc:
+            print(f"Could not restore {stored}: {exc}")
+
+    save_manifest(manifest)
+
+def purge():
+    manifest = load_manifest()
+    active = [item for item in manifest["items"] if item["status"] == "staged"]
+    if not active:
+        print("There are no staged files to delete.")
+        return
+
+    print("This permanently deletes files from the review folder.")
+    print("Check the files first with: python3 cleanup.py review")
+
+    for item in active:
+        print(f"  {item['id']}: {item['stored']}")
+    choice = input("\nDelete IDs (comma-seperated) or 'all': ").strip().lower()
+    if choice == "all":
+        selected = active
+
+    else:
+        try:
+            ids = {int(value.strip()) for value in choice.split(",")}
+            selected = [item for item in active if item["id"] in ids]
+            if not selected or len(selected) != len(ids):
+                raise ValueError
+        except ValueError:
+            print("Invalid selection. Nothing deleted")
+            return
+
+    confirm = input(
+        f"Type DELETE to permanently delete {len(selected)} file(s): "
+    ).strip()
+
+    if confirm != "DELETE":
+        print("Cancelled")
+        return
+
+    for item in selected:
+        stored = Path(item["stored"])
+        try:
+            if not is_inside(stored, REVIEW) or stored == MANIFEST:
+                print(f"Skipped unsafe path: {stored}")
+                continue
+            if stored.is_file() and not stored.is_symlink():
+                stored.unlink()
+                item["status"] = "deleted"
+                print(f"Deleted: {stored.name}")
+        except OSError as exc:
+            print(f"Could not delete {stored}: {exc}")
+
+    save_manifest(manifest)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Scan, review, restrore, and selectively del files."
+    )
+    parser.add_argument(
+        "command",
+        choices=("scan","review","restore","purge"),
+        help="operation to perform"
+    )
+    args = parser.parse_args()
+    try:
+        if args.command == "scan":
+            scan()
+        elif args.command == "review":
+            review()
+        elif args.command == "restore":
+            restore()
+        elif args.command == "purge":
+            purge()
+    except (OSError, RuntimeError) as exc:
+        print(f"Error: {exc}", file = sys.stderr)
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
