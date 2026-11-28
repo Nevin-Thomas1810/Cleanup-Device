@@ -47,6 +47,19 @@ cd linux-cleanup-v1.0.0
 git clone https://github.com/Nevin-Thomas1810/Cleanup-Device.git
 cd Cleanup-Device
 ```
+### How It Works:
+
+```scan → review → restore | purge ```
+
+```scan — Walks your home directory, identifies candidates (temp files, old logs, duplicates, PDFs, screenshots), and lets you select which to stage.```
+
+```review — Shows everything currently staged in ~/CleanupReview along with its original path.```
+
+```restore — Moves a staged file (or all staged files) back to its original location.```
+
+```purge — Permanently deletes staged files. Requires explicit confirmation.```
+
+A JSON manifest in ~/CleanupReview tracks the original path of every staged file, which is what makes restore possible.
 
 ## Usage
 
@@ -104,7 +117,7 @@ linux-cleanup/
 
 ## Technologies Used
 
-- Python 3
+- Python 3.9+
 - `argparse`
 - `hashlib`
 - `json`
